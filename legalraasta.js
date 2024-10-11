@@ -1,34 +1,6 @@
-// https://www.legalraasta.com/blog/ - legalraasta, Web Scrapping
-
 const axios = require('axios');
-const path = require('path');
 const cheerio = require('cheerio');
-const fs = require('fs');
-
-const fileName = 'legalraasta.json';
-
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
-    }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList);
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
-}
+const supabase = require('./supabaseClient');
 
 async function getData(url) {
     try {
@@ -50,19 +22,32 @@ async function getData(url) {
             if (clearParagraph && clearParagraph !== "") {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
         let dataString = clearParagraphs.join(' ');
 
         const newsItem = {
-            'headline': title, 
-            'data': dataString
+            'title': title,
+            'content': dataString,
+            'url': url
         };
 
         return newsItem;
     } catch (error) {
         console.error('Error fetching data from:', url);
         return null; // Return null for unsuccessful requests
+    }
+}
+
+async function saveToSupabase(item) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .insert(item);
+
+    if (error) {
+        console.error('Error saving data to Supabase:', error);
+    } else {
+        console.log('Data saved to Supabase:', data);
     }
 }
 
@@ -73,28 +58,40 @@ async function main() {
         const baseUrl = 'https://www.legalraasta.com/blog/';
         let targetUrl = `${baseUrl}`;
  
-        if(i > 1) { 
-            targetUrl = `${baseUrl}page/${i}/`
+        if (i > 1) { 
+            targetUrl = `${baseUrl}page/${i}/`;
         }
+
         try {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
 
-            // Save HTML content to a file
-            const fileName = `legalraasta.html`;  // for sitemap, better for web scrawling
-            const filePath = path.join(__dirname, fileName);
-
-            fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
-            // Continue with the rest of your processing
             const $ = cheerio.load(htmlContent);
             const elements = $('h2.entry-title a').map((index, element) => $(element).attr('href')).get();
             
-            const tasks = elements.map(element => getData(element));
-            const dataList = await Promise.all(tasks);
+            for (const element of elements) {
+                // Check if the URL already exists in Supabase
+                const { data: existingData, error: fetchError } = await supabase
+                    .from('votum_article_scrapers')
+                    .select('url')
+                    .eq('url', element)
+                    .single();
 
-            updateFile(dataList);
- 
+                if (fetchError) {
+                    console.error('Error checking URL in Supabase:', fetchError);
+                    continue; // Skip this URL if there's an error
+                }
+
+                // If data does not exist, scrape and save it
+                if (!existingData) {
+                    const newsItem = await getData(element);
+                    if (newsItem) {
+                        await saveToSupabase(newsItem);
+                    }
+                } else {
+                    console.log('URL already exists, skipping:', element);
+                }
+            }
             i++;
         } catch (error) {
             console.error('Error:', error.message);

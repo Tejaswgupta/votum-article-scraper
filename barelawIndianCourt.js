@@ -6,9 +6,9 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const NHM = require('node-html-markdown');
 const NodeHtmlMarkdown = NHM.NodeHtmlMarkdown;
+const supabase = require('./supabaseClient');
 
 const fileName = 'barelawIndianCourt.json';
-
 const urls = new Set([]);
 
 function saveUrls(urls) {
@@ -30,12 +30,24 @@ function updateFile(dataList) {
         console.log('Error reading existing data:', error);
     }
 
-    // Filter out null values before combining data
     const validDataList = dataList.filter(item => item !== null);
-
     const combinedData = existingData.concat(validDataList);
 
     fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+}
+
+async function saveToSupabase(data) {
+    const { headline, dataString, url } = data;
+
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .upsert({ title: headline, content: dataString, url });
+
+    if (error) {
+        console.error('Error saving to Supabase:', error.message);
+    } else {
+        console.log(`Data saved to Supabase for URL: ${url}`);
+    }
 }
  
 async function getData(url) {
@@ -54,18 +66,20 @@ async function getData(url) {
             return $(element).find("br").replaceWith("\n").end().text();
         }).get();
    
-        // Join paragraphs and clean up unwanted characters
         let dataString = paragraphs.join('\n').replace(/[\t]+/g, ' ').replace(/[\u200B-\u200D\uFEFF]+/g, ' ');
-        dataString = dataString.replace(/For More Drafts Related To Indian Courts- Link Below\s?(https:\/\/www\.barelaw\.in\/indian-courts-2\/)?/g, '')
+        dataString = dataString.replace(/For More Drafts Related To Indian Courts- Link Below\s?(https:\/\/www\.barelaw\.in\/indian-courts-2\/)?/g, '');
 
         const newsItem = {
-            'headline': title, 
-            'data': dataString
+            headline: title, 
+            dataString: dataString,
+            url: url
         };
 
         console.log(`Done: ${urls.size}`);
         urls.add(url);
         saveUrls([...urls]);
+
+        await saveToSupabase(newsItem);
 
         return newsItem;
     } catch (error) {
@@ -94,13 +108,11 @@ async function main() {
         const response = await axios.get(targetUrl);
         const htmlContent = response.data;
 
-        // Save HTML content to a file
-        const fileName = `barelawIndianCourt.html`;  // for sitemap, better for web scrawling
+        const fileName = `barelawIndianCourt.html`;
         const filePath = path.join(__dirname, fileName);
 
         fs.writeFileSync(filePath, htmlContent, 'utf-8');
 
-        // Continue with the rest of your processing
         const $ = cheerio.load(htmlContent);
         const elements = $('.post-item-title a').map((index, element) => $(element).attr('href')).get();
         

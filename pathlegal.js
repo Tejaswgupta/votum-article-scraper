@@ -1,45 +1,21 @@
 // https://www.pathlegal.in/ - pathlegal, Web Scrapping
 
 const axios = require('axios');
-const path = require('path');
 const cheerio = require('cheerio');
-const fs = require('fs');
+const supabase = require('./supabaseClient'); // Importing the Supabase client
 
-const fileName = 'pathlegal.json';
+async function urlExists(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url)
+        .single();
 
-function updateFile(dataList) {
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
-    }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList)
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
-}
-
-function hindiMoreThanXPercents(inputString, maxPercentage=10) {
-    const hindiRegex = /[\u0900-\u097F]/g;
-
-    const hindiSymbolsCount = (inputString.match(hindiRegex) || []).length;
-    const percentage = (hindiSymbolsCount / inputString.length) * 100;
-    return percentage > maxPercentage;
+    return data !== null; // Returns true if the URL exists
 }
 
 async function getData(url) {
-    if(!url.startsWith('https://www.pathlegal.in')) return;
+    if (!url.startsWith('https://www.pathlegal.in')) return;
 
     try {
         const response = await axios.get(url);
@@ -59,35 +35,37 @@ async function getData(url) {
             if ((clearParagraph) && (clearParagraph !== "")) {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
         const englishPattern = /^[a-zA-Z !@#$%^&*()_+{}\[\]:;<>,.?~\\/\n-]*$/;
 
         // Join paragraphs and clean up unwanted characters
         let dataString = clearParagraphs.join(' ');
 
-        const newsItem = {
-            'headline': title,
-            'data': dataString
-        };
-
-        if (
-            (hindiMoreThanXPercents(title) || hindiMoreThanXPercents(dataString)) ||
-            !dataString ||
-            !englishPattern.test(dataString)
-        ) {
+        if (!dataString || !englishPattern.test(dataString)) {
             return null;
         }
 
-        return newsItem;
+        return { title, dataString, url };
     } catch (error) {
         console.error('Error fetching data from:', url);
         return null;
     }
 }
 
-async function main() {
+async function saveToSupabase(article) {
+    const { title, dataString, url } = article;
 
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content: dataString, url }]);
+
+    if (error) {
+        console.error('Error saving to Supabase:', error.message);
+    }
+}
+
+async function main() {
     const pageSize = 20;
     let currentPage = 1;
     let currentElementsN = 20;
@@ -100,12 +78,6 @@ async function main() {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
 
-            // Save HTML content to a file
-            const fileName = `pathlegal.html`;  // for sitemap, better for web scrawling
-            const filePath = path.join(__dirname, fileName);
-
-            fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
             const $ = cheerio.load(htmlContent);
             const elements = $('span.name a').map((index, element) => {
                 let href = $(element).attr('href');
@@ -113,11 +85,13 @@ async function main() {
             }).get();
 
             currentElementsN = elements.length;
-            
-            const tasks = elements.map(element => getData(element));
-            const dataList = await Promise.all(tasks); // concurrent API requests for parallelizing
-            
-            updateFile(dataList);
+
+            for (const element of elements) {
+                const article = await getData(element);
+                if (article && !(await urlExists(article.url))) {
+                    await saveToSupabase(article);
+                }
+            }
 
             currentPage++;
         } catch (error) {
@@ -127,4 +101,4 @@ async function main() {
     }
 }
 
-main(); 
+main();

@@ -1,35 +1,32 @@
-// https://spicyip.com - spicyip, Web Scrapping
-
 const axios = require('axios');
-const path = require('path');
 const cheerio = require('cheerio');
-const fs = require('fs');
+const supabase = require('./supabaseClient');
 
-const fileName = 'spicyip.json';
-
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+async function checkExistingData(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url)
+        .single();
+        
+    if (error) {
+        console.error('Error checking existing data:', error);
+        return false;
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList)
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+    
+    return data !== null;
 }
- 
+
+async function saveToSupabase(title, content, url) {
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
+    
+    if (error) {
+        console.error('Error saving data to Supabase:', error);
+    }
+}
+
 async function getData(url) {
     try {
         const response = await axios.get(url);
@@ -50,17 +47,11 @@ async function getData(url) {
             if (clearElement && clearElement !== "") {
                 clearElements.push(clearElement);
             }
-        })
-  
-        // Join paragraphs and clean up unwanted characters
+        });
+
         let dataString = clearElements.join(' ');
 
-        const newsItem = {
-            'headline': title.replace(/[\n\t\r]+/g, ' ').replace(/[\s\u200B-\u200D\uFEFF]+/g, ' '), 
-            'data': dataString
-        };
-
-        return newsItem;
+        return { title, dataString, url };
     } catch (error) {
         console.error('Error fetching data from:', url);
         return null; // Return null for unsuccessful requests
@@ -75,27 +66,25 @@ async function main() {
         let targetUrl = `${baseUrl}/`;
  
         if(i > 1) {
-            targetUrl = `https://spicyip.com/page/${i}`
+            targetUrl = `https://spicyip.com/page/${i}`;
         }
         try {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
 
-            // Save HTML content to a file
-            const fileName = `spicyip.html`;  // for sitemap, better for web scrawling
-            const filePath = path.join(__dirname, fileName);
-
-            fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
-            // Continue with the rest of your processing
             const $ = cheerio.load(htmlContent);
             const elements = $('h2.entry-title a').map((index, element) => $(element).attr('href')).get();
             
-            const tasks = elements.map(element => getData(element));
-            const dataList = await Promise.all(tasks);
+            const tasks = elements.map(async (element) => {
+                const { title, dataString } = await getData(element);
+                if (title && await checkExistingData(element)) {
+                    console.log(`Data already exists for URL: ${element}`);
+                } else {
+                    await saveToSupabase(title, dataString, element);
+                }
+            });
+            await Promise.all(tasks);
 
-            updateFile(dataList);
- 
             i++;
         } catch (error) {
             console.error('Error:', error.message);

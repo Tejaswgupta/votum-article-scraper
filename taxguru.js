@@ -1,44 +1,39 @@
-// https://taxguru.in/type/articles - taxguru, Web Scrapping
-
 const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
+const supabase = require('./supabaseClient');
 
-const fileName = 'taxguru.json';
+async function checkIfExists(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url);
 
-
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error checking URL existence:', error);
+        return false;
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList)
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+    return data.length > 0;
 }
 
-function hindiMoreThanXPercents(inputString, maxPercentage=40) {
-    const hindiRegex = /[\u0900-\u097F]/g;
+async function saveToSupabase(title, content, url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
 
+    if (error) {
+        console.error('Error saving data to Supabase:', error);
+    }
+}
+
+function hindiMoreThanXPercents(inputString, maxPercentage = 40) {
+    const hindiRegex = /[\u0900-\u097F]/g;
     const hindiSymbolsCount = (inputString.match(hindiRegex) || []).length;
     const percentage = (hindiSymbolsCount / inputString.length) * 100;
     return percentage > maxPercentage;
 }
- 
+
 async function getData(url) {
     try {
         const response = await axios.get(url);
@@ -85,13 +80,12 @@ async function getData(url) {
                 clearParagraph = '    - ' + clearParagraph.slice(1) + '\n\n';
             }
 
-
             if (clearParagraph && clearParagraph !== "") {
                 clearParagraphs.push(clearParagraph);
             }
 
             return false;
-        })
+        });
 
         let dataString = clearParagraphs.join(' ');
 
@@ -100,8 +94,9 @@ async function getData(url) {
         }
 
         const newsItem = {
-            'headline': title, 
-            'data': dataString
+            title,
+            content: dataString,
+            url
         };
 
         return newsItem;
@@ -118,28 +113,24 @@ async function main() {
         const baseUrl = 'https://taxguru.in/type/articles';
         let targetUrl = `${baseUrl}`;
  
-        if(i > 1) {
-            targetUrl = `${baseUrl}/page/${i}/`
+        if (i > 1) {
+            targetUrl = `${baseUrl}/page/${i}/`;
         }
         try {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
 
-            // Save HTML content to a file
-            const fileName = `taxguru.html`;  // for sitemap, better for web scrawling
-            const filePath = path.join(__dirname, fileName);
-
-            fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
-            // Continue with the rest of your processing
             const $ = cheerio.load(htmlContent);
             const elements = $('.newsBoxPostTitle a').map((index, element) => $(element).attr('href')).get();
             
-            const tasks = elements.map(element => getData(element));
-            const dataList = await Promise.all(tasks);
+            const tasks = elements.map(async (element) => {
+                const newsItem = await getData(element);
+                if (newsItem && !(await checkIfExists(newsItem.url))) {
+                    await saveToSupabase(newsItem.title, newsItem.content, newsItem.url);
+                }
+            });
 
-            updateFile(dataList);
- 
+            await Promise.all(tasks);
             i++;
         } catch (error) {
             console.error('Error:', error.message);

@@ -1,34 +1,7 @@
-// https://www.scconline.com/blog - scconline, Web Scrapping
-
 const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
-const fs = require('fs');
-
-const fileName = 'scconline.json';
-
-function updateFile(dataList) {
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
-    }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList)
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
-}
+const supabase = require('./supabaseClient');
 
 async function getData(url) {
     try {
@@ -48,16 +21,15 @@ async function getData(url) {
             if (paragraph && paragraph.trim() !== "") {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
-        // Join paragraphs and clean up unwanted characters
         let dataString = clearParagraphs.join(' ');
-        const newsItem = {
-            'headline': title,
-            'data': dataString
-        };
 
-        return newsItem;
+        return {
+            title: title,
+            content: dataString,
+            url: url
+        };
     } catch (error) {
         console.error('Error fetching data from:', url);
         return null;
@@ -71,23 +43,43 @@ async function main() {
         const response = await axios.get(baseUrl);
         const htmlContent = response.data;
 
-        // Save HTML content to a file
-        const fileName = `scconline.html`;  // for sitemap, better for web scrawling
-        const filePath = path.join(__dirname, fileName);
-
-        fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
         const $ = cheerio.load(htmlContent);
         const elements = $('h2.entry-title a').map((index, element) => $(element).attr('href')).get();
 
         const tasks = elements.map(element => getData(element));
-        const dataList = await Promise.all(tasks); // this allows to parallelize the program/code
+        const dataList = await Promise.all(tasks); 
 
-        updateFile(dataList);
+        for (const item of dataList) {
+            if (item) {
+                const { data, error } = await supabase
+                    .from('votum_article_scrapers')
+                    .select('url')
+                    .eq('url', item.url)
+                    .single();
+
+                if (!error && data) {
+                    console.log(`Data for URL already exists: ${item.url}`);
+                } else {
+                    const { error: insertError } = await supabase
+                        .from('votum_article_scrapers')
+                        .insert([{
+                            title: item.title,
+                            content: item.content,
+                            url: item.url
+                        }]);
+                    
+                    if (insertError) {
+                        console.error('Error inserting data:', insertError);
+                    } else {
+                        console.log(`Inserted data for URL: ${item.url}`);
+                    }
+                }
+            }
+        }
 
     } catch (error) {
         console.error('Error:', error.message);
     }
 }
 
-main(); 
+main();

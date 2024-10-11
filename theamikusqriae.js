@@ -1,50 +1,20 @@
-// https://theamikusqriae.com/legal-articles/ - theamikusqriae - Legal Articles, Web Scrapping
-
 const axios = require('axios');
-const path = require('path');
 const cheerio = require('cheerio');
-const fs = require('fs');
+const supabase = require('./supabaseClient'); // Import the Supabase client
 
-const fileName = 'theamikusqriae.json';
-
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
-    }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList)
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
-}
-  
 async function getData(url) {
     try {
-        const response = await axios.get(url);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(url);
+        const $ = cheerio.load(data);
 
-
-        const paragraphsAll = $('.entry-title h1, .entry-content:not(form) > p:not(:has(em))')
+        const paragraphsAll = $('.entry-title h1, .entry-content:not(form) > p:not(:has(em))');
 
         paragraphsAll.each(function () {
             const updatedParagraph = $(this).html().replace(/<br>/g, ' ');
             $(this).html(updatedParagraph);
-        })
+        });
 
-        const paragraphs = paragraphsAll.map(
-            (index, element) => $(element).text()).get()
+        const paragraphs = paragraphsAll.map((index, element) => $(element).text()).get();
 
         let clearParagraphs = [];
         paragraphs.some((paragraph) => {
@@ -71,16 +41,10 @@ async function getData(url) {
             if (clearParagraph && clearParagraph.trim() !== "") {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
-        // Join paragraphs and clean up unwanted characters
         let dataString = clearParagraphs.join(' ');
-
-        const newsItem = { 
-            'data': dataString,
-        };
-
-        return newsItem;
+        return dataString; // Return the concatenated paragraphs
     } catch (error) {
         console.error('Error fetching data from:', url);
         return null; // Return null for unsuccessful requests
@@ -95,21 +59,40 @@ async function main() {
         const response = await axios.get(targetUrl);
         const htmlContent = response.data;
 
-        // Save HTML content to a file
-        const fileName = `theamikusqriae.html`;
-        const filePath = path.join(__dirname, fileName);
-
-        fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
-        // Continue with the rest of your processing
         const $ = cheerio.load(htmlContent);
         const elements = $('.elementor-post__title a').map((index, element) => $(element).attr('href')).get();
 
-        const tasks = elements.map(element => getData(element));
-        const dataList = await Promise.all(tasks);
+        for (const element of elements) {
+            const content = await getData(element);
+            if (content) {
+                // Check if the URL already exists in the Supabase table
+                const { data: existingData, error: fetchError } = await supabase
+                    .from('votum_article_scrapers')
+                    .select('url')
+                    .eq('url', element);
 
-        updateFile(dataList);
+                if (fetchError) {
+                    console.error('Error checking existing data:', fetchError);
+                    continue;
+                }
 
+                // If the URL does not exist, insert the new article
+                if (existingData.length === 0) {
+                    const title = $('.entry-title h1').text(); // Fetch title from the page
+                    const { error: insertError } = await supabase
+                        .from('votum_article_scrapers')
+                        .insert([{ title, content, url: element }]);
+
+                    if (insertError) {
+                        console.error('Error inserting data:', insertError);
+                    } else {
+                        console.log(`Saved article: ${title} - ${element}`);
+                    }
+                } else {
+                    console.log(`Article already exists for URL: ${element}`);
+                }
+            }
+        }
     } catch (error) {
         console.error('Error:', error.message);
     }

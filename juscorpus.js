@@ -4,6 +4,7 @@ const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
+const supabase = require('./supabaseClient');
 
 const fileName = 'juscorpus.json';
 
@@ -22,12 +23,21 @@ function updateFile(dataList) {
         console.log('Error reading existing data:', error);
     }
 
-    // Filter out null values before combining data
     const validDataList = dataList.filter(item => item !== null);
 
     const combinedData = existingData.concat(validDataList);
 
     fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+}
+
+async function saveToSupabase(title, content, url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
+
+    if (error) {
+        console.error('Error saving to Supabase:', error);
+    }
 }
 
 async function getData(url) {
@@ -51,7 +61,7 @@ async function getData(url) {
             if (clearParagraph && clearParagraph !== "") {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
         let dataString = clearParagraphs.join(' ');
 
@@ -60,10 +70,12 @@ async function getData(url) {
             'data': dataString
         };
 
+        await saveToSupabase(title, dataString, url);
+
         return newsItem;
     } catch (error) {
         console.error('Error fetching data from:', url);
-        return null; // Return null for unsuccessful requests
+        return null;
     }
 }
 
@@ -82,8 +94,7 @@ async function main() {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
 
-            // Save HTML content to a file
-            const fileName = `juscorpus.html`;  // for sitemap, better for web scrawling
+            const fileName = `juscorpus.html`;
             const filePath = path.join(__dirname, fileName);
 
             fs.writeFileSync(filePath, htmlContent, 'utf-8');

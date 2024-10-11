@@ -4,38 +4,38 @@ const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
+const supabase = require('./supabaseClient');
 
-const fileName = 'lawyered.json';
+async function checkExistingUrl(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url);
 
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error checking existing URL:', error);
+        return false;
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList);
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+    
+    return data.length > 0; // Return true if URL exists
 }
- 
+
+async function saveToSupabase(title, content, url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
+
+    if (error) {
+        console.error('Error saving data to Supabase:', error);
+    }
+}
+
 async function getData(url) {
     try {
         const response = await axios.get(url);
         const $ = cheerio.load(response.data);
 
-        const title = $('.blog-top h3').text().trim(); 
+        const title = $('.blog-top h3').text().trim();
         const paragraphs = $('.content p, .content ul li').map((index, element) => $(element).text()).get();
 
         let clearParagraphs = [];
@@ -49,16 +49,15 @@ async function getData(url) {
             if (clearParagraph && clearParagraph !== "") {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
         let dataString = clearParagraphs.join(' ');
 
-        const newsItem = {
-            'headline': title, 
-            'data': dataString
+        return {
+            title,
+            content: dataString,
+            url
         };
-
-        return newsItem;
     } catch (error) {
         console.error('Error fetching data from:', url);
         return null; // Return null for unsuccessful requests
@@ -66,7 +65,6 @@ async function getData(url) {
 }
 
 async function main() {
-
     const baseUrl = 'https://www.lawyered.in/legal-disrupt/';
     let targetUrl = `${baseUrl}`;
 
@@ -74,24 +72,21 @@ async function main() {
         const response = await axios.get(targetUrl);
         const htmlContent = response.data;
 
-        // Save HTML content to a file
-        const fileName = `lawyered.html`;  // for sitemap, better for web crawling
-        const filePath = path.join(__dirname, fileName);
-
-        fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
         const $ = cheerio.load(htmlContent);
 
         const elements = $('.content h5 a').map((index, element) => {
             const href = $(element).attr('href');
-            // Add the prefix only if it doesn't start with 'http'
             return href.startsWith('http') ? href : `https://www.lawyered.in${href}`;
         }).get();
 
-        const tasks = elements.map(element => getData(element));
-        const dataList = await Promise.all(tasks);
+        const tasks = elements.map(async (element) => {
+            const newsItem = await getData(element);
+            if (newsItem && !(await checkExistingUrl(newsItem.url))) {
+                await saveToSupabase(newsItem.title, newsItem.content, newsItem.url);
+            }
+        });
 
-        updateFile(dataList);
+        await Promise.all(tasks);
 
     } catch (error) {
         console.error('Error:', error.message);

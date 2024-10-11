@@ -6,38 +6,28 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const NHM = require('node-html-markdown');
 const NodeHtmlMarkdown = NHM.NodeHtmlMarkdown;
-
-const fileName = 'cyrilshroff.json';
+const supabase = require('./supabaseClient');
 
 const urls = new Set([]);
 
 function saveUrls(urls) {
-    fs.writeFileSync('urls.json', JSON.stringify(urls, null, 2), 'utf-8');
+    fs.writeFileSync('urls.json', JSON.stringify([...urls], null, 2), 'utf-8');
 }
 
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
+async function saveToSupabase(data) {
+    const { headline, dataString, url } = data;
 
-    let existingData = [];
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .upsert({ title: headline, content: dataString, url });
 
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error saving to Supabase:', error.message);
+    } else {
+        console.log(`Data saved to Supabase for URL: ${url}`);
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList);
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
 }
- 
+
 async function getData(url) {
     if (urls.has(url)) {
         return null;
@@ -61,21 +51,25 @@ async function getData(url) {
         dataString = dataString.trimStart();
  
         const newsItem = {
-            'headline': title, 
-            'data': dataString
+            headline: title,
+            dataString: dataString,
+            url: url
         };
 
         console.log(`Done: ${urls.size}`);
         urls.add(url);
         saveUrls([...urls]);
 
+        await saveToSupabase(newsItem);
+
         return newsItem;
     } catch (error) {
         console.error('Error fetching data from:', url);
-        return null; // Return null for unsuccessful requests
+        return null;  // Return null for unsuccessful requests
     }
 }
 
+// Main function for handling blog pages
 async function main() {
     const subblogs = ['disputeresolution', 'corporate', 'privateclient', 'tax', 'competition'];
     const subblogTasks = subblogs.map(async (subblog) => {
@@ -87,13 +81,12 @@ async function main() {
             const $ = cheerio.load(htmlContent);
             const elements = $('h1.lxb_af-template_tags-get_linked_post_title > a').map((index, element) => $(element).attr('href')).get();
             const tasks = elements.map(element => getData(element));
-            const dataList = await Promise.all(tasks);
-            updateFile(dataList);
+            await Promise.all(tasks);  // Wait for all data to be fetched and saved
             try {
                 const nextPageUrl = $('a.lxb_af-template_tags-get_pagination-button-older').map((index, element) => $(element).attr('href')).get()[0];
                 blogPageUrl = nextPageUrl;
             } catch (err) {
-                // no next page url, end of pages
+                // No next page url, end of pages
                 break;
             }
         }

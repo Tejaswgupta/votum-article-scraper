@@ -28,6 +28,6 @@ fs.readdir(folderPath, (err, files) => {
             });
         });
 
-        pm2.disconnect();
+        setInterval(() => {}, 1000);
     });
 });

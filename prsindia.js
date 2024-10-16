@@ -2,32 +2,32 @@ const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
-
-const fileName = 'prsindia.json';
+const supabase = require('./supabaseClient');
 
 let t = 1;
 
-function updateFile(dataList) {
-    const filePath = path.join(__dirname, fileName);
+async function checkIfUrlExists(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url)
+        .single();
 
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error checking URL:', error);
+        return false;
     }
+    return data !== null;
+}
 
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
+async function saveToSupabase(title, content, url) {
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
 
-    const combinedData = existingData.concat(validDataList)
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+    if (error) {
+        console.error('Error saving data to Supabase:', error);
+    }
 }
 
 function convertHtmlTableToMarkdown(table) {
@@ -51,11 +51,9 @@ async function getData(url) {
 
         const title = $('.field-item h2').text().trim();
 
-        const paragraphs = $('.field-item p')
+        const paragraphs = $('.field-item p');
         let clearParagraphs = [];
         let tableFound = false;
-
-        // const paragraphs = $('.field-item p').map((index, element) => $(element).text()).get();
 
         paragraphs.each(function (index, element) {
             const paragraph = $(this);
@@ -63,7 +61,7 @@ async function getData(url) {
 
             if (paragraphParent.prop('tagName').toLowerCase() === 'td' && !tableFound) {
                 tableFound = true;
-                const tableTag = paragraphParent.parent().parent().parent()
+                const tableTag = paragraphParent.parent().parent().parent();
 
                 const markdownTable = convertHtmlTableToMarkdown(tableTag);
                 if (t === 1) {
@@ -74,7 +72,6 @@ async function getData(url) {
                     console.log('--------------------------');
                     t++;
                 }
-
 
                 clearParagraphs.push(markdownTable);
             } else {
@@ -94,24 +91,18 @@ async function getData(url) {
                     clearParagraphs.push(clearParagraph);
                 }
             }
-        })
+        });
 
         let dataString = clearParagraphs.join(' ');
 
-        const newsItem = {
-            'headline': title,
-            'data': dataString
-        };
-
-        return newsItem;
+        return { title, dataString, url }; // Return title, content, and url
     } catch (error) {
-        console.error('Error fetching data from:', url );
+        console.error('Error fetching data from:', url);
         return null; // Return null for unsuccessful requests
     }
 }
 
 async function main() {
-
     const baseUrl = 'https://prsindia.org/billtrack';
     let targetUrl = `${baseUrl}`;
 
@@ -119,26 +110,21 @@ async function main() {
         const response = await axios.get(targetUrl);
         const htmlContent = response.data;
 
-        // Save HTML content to a file
-        const fileName = `prsindia.html`; // for sitemap, better for web scrawling
-        const filePath = path.join(__dirname, fileName);
-
-        fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
-        // Continue with the rest of your processing
         const $ = cheerio.load(htmlContent);
-
         const elements = $('.cate a').map((index, element) => {
             const href = $(element).attr('href');
             return href.startsWith('/billtrack') ? `https://prsindia.org${href}` : href;
         }).get();
 
-        const tasks = elements.map(element => getData(element));
-        const dataList = await Promise.all(tasks);
-
-        // Remove null values before updating the file
-        updateFile(dataList.filter(Boolean));
-
+        for (const element of elements) {
+            const newsItem = await getData(element);
+            if (newsItem) {
+                const urlExists = await checkIfUrlExists(newsItem.url);
+                if (!urlExists) {
+                    await saveToSupabase(newsItem.title, newsItem.dataString, newsItem.url);
+                }
+            }
+        }
     } catch (error) {
         console.error('Error:', error.message);
     }

@@ -1,33 +1,27 @@
-// https://www.livelaw.in/ - livelaw, Web Scrapping 
-
 const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
+const supabase = require('./supabaseClient');
 
-const fileName = 'livelaw.json';
+async function checkIfUrlExists(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url)
+        .single();
 
-function updateFile(dataList) {
-    const filePath = path.join(__dirname, fileName);
+    return data && !error; // Returns true if data exists
+}
 
-    let existingData = [];
+async function saveToSupabase(title, content, url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
 
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error saving to Supabase:', error);
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList);
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
 }
 
 async function getData(url) {  
@@ -44,8 +38,9 @@ async function getData(url) {
 
         return {
             'headline': article['headline'],
-            'data': article['articleBody'].replace('    ', '\n')
-        }
+            'data': article['articleBody'].replace('    ', '\n'),
+            'url': url
+        };
     } catch (error) {
         console.error('Website page not found:', url);
         return null;
@@ -58,17 +53,11 @@ async function main() {
     while (i <= 297) {
         const baseUrl = 'https://www.livelaw.in/articles';
         let targetUrl = `${baseUrl}/${i}`;
-        console.log(`${i}`)
+        console.log(`${i}`);
 
         try {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
-
-            // Save HTML content to a file
-            const fileName = `livelaw.html`;  // for sitemap, better for web scrawling
-            const filePath = path.join(__dirname, fileName);
-
-            fs.writeFileSync(filePath, htmlContent, 'utf-8');
 
             const $ = cheerio.load(htmlContent);
 
@@ -93,10 +82,17 @@ async function main() {
             // Convert the Set back to an array if needed
             const uniqueElements = [...uniqueUrls].filter(url => url.split('-').length - 1 > 3 && url.includes('article'));
 
-            const tasks = uniqueElements.map(element => getData(element));
-            const dataList = await Promise.all(tasks); // concurrent API requests for parallelizing
-
-            updateFile(dataList);
+            for (const element of uniqueElements) {
+                const exists = await checkIfUrlExists(element);
+                if (!exists) {
+                    const articleData = await getData(element);
+                    if (articleData) {
+                        await saveToSupabase(articleData.headline, articleData.data, articleData.url);
+                    }
+                } else {
+                    console.log(`Skipping already existing URL: ${element}`);
+                }
+            }
 
             i++;
         } catch (error) {
@@ -106,4 +102,4 @@ async function main() {
     }
 }
 
-main(); 
+main();

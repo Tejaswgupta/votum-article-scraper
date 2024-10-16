@@ -1,33 +1,32 @@
-// https://www.legalbites.in/topics/articles - legalbites, Web Scrapping
-
 const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
+const supabase = require('./supabaseClient');
 
-const fileName = 'legalbites.json';
+async function checkUrlExists(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url)
+        .single();
 
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error checking URL:', error);
+        return false;
     }
 
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
+    return data !== null;
+}
 
-    const combinedData = existingData.concat(validDataList);
+async function saveToSupabase(title, content, url) {
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
 
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+    if (error) {
+        console.error('Error saving data to Supabase:', error);
+    }
 }
 
 async function getData(url) {
@@ -56,17 +55,12 @@ async function getData(url) {
             if (clearParagraph && clearParagraph !== "") {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
         let dataString = clearParagraphs.join(' ');
 
-        const newsItem = {
-            'headline': title, 
-            'data': dataString
-        };
-
         if (title !== "" && dataString !== "") {
-            return newsItem;
+            return { title, content: dataString, url };
         }
 
     } catch (error) {
@@ -90,26 +84,23 @@ async function main() {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
 
-            // Save HTML content to a file
-            const fileName = `legalbites.html`;  // for sitemap, better for web crawling
-            const filePath = path.join(__dirname, fileName);
-
-            fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
-            // Continue with the rest of your processing
             const $ = cheerio.load(htmlContent);
             const elements = $('h3.post-title a').map((index, element) => $(element).attr('href')).get();
 
-            // Modify URLs by removing the prefix and adding the base URL
             const modifiedUrls = elements.map(element => {
                 const formattedElement = element.startsWith('/') ? element.substring(1) : element;
                 return `https://www.legalbites.in/${formattedElement.replace('/topics/articles/', '')}`;
             });
 
-            const tasks = modifiedUrls.map(url => getData(url));
-            const dataList = await Promise.all(tasks);
-
-            updateFile(dataList);
+            for (const url of modifiedUrls) {
+                const exists = await checkUrlExists(url);
+                if (!exists) {
+                    const data = await getData(url);
+                    if (data) {
+                        await saveToSupabase(data.title, data.content, url);
+                    }
+                }
+            }
 
             i++;
         } catch (error) {

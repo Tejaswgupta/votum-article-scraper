@@ -1,49 +1,43 @@
-// https://leggerhythms.org/category/law-articles/ - Law Web, Web Scrapping
-
 const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
+const supabase = require('./supabaseClient'); // Import Supabase client
 
-const fileName = 'leggerhythms.json';
+async function checkExistingUrl(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url);
 
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error checking existing URL:', error);
+        return false;
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList);
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+    return data.length > 0; // Return true if URL exists
 }
- 
+
+async function saveToSupabase(title, content, url) {
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
+
+    if (error) {
+        console.error('Error saving data to Supabase:', error);
+    }
+}
+
 async function getData(url) {
     try {
         const response = await axios.get(url);
         const $ = cheerio.load(response.data);
 
         const title = $('h1.title').text().trim();
-
-        // Select and extract text from <p> elements inside the div with id 'content'
         const paragraphs = $('#content p:not(:has(em>strong)), #content li').map((index, element) => $(element).text()).get();
 
         let clearParagraphs = [];
 
         paragraphs.forEach((paragraph) => {
-
             const clearParagraph = paragraph
                 .replace(/[\n\t]+/g, ' ')
                 .replace(/[\s\u200B-\u200D\uFEFF]+/g, ' ')
@@ -57,20 +51,20 @@ async function getData(url) {
             ) {
                 clearParagraphs.push(clearParagraph);
             }
-        })
+        });
 
-        // Join paragraphs and clean up unwanted characters
         let dataString = clearParagraphs.join(' ');
 
         const newsItem = {
-            'headline': title,
-            'data': dataString
+            'title': title,
+            'content': dataString,
+            'url': url
         };
 
         return newsItem;
     } catch (error) {
         console.error('Error fetching data from:', url);
-        return null; // Return null for unsuccessful requests
+        return null;
     }
 }
 
@@ -81,28 +75,24 @@ async function main() {
         const baseUrl = 'https://leggerhythms.org/category/law-articles';
         let targetUrl = `${baseUrl}/`;
 
-        if( i > 1) {
+        if (i > 1) {
             targetUrl = `${baseUrl}/category/law-articles/page/${i}/`;
         }
         try {
             const response = await axios.get(targetUrl);
             const htmlContent = response.data;
 
-            // Save HTML content to a file
-            const fileName = `leggerhythms.html`;  // for sitemap, better for web scrawling
-            const filePath = path.join(__dirname, fileName);
-
-            fs.writeFileSync(filePath, htmlContent, 'utf-8');
-
-            // Continue with the rest of your processing
             const $ = cheerio.load(htmlContent);
             const elements = $('h2.title a').map((index, element) => $(element).attr('href')).get();
-            
-            const tasks = elements.map(element => getData(element));
-            const dataList = await Promise.all(tasks);
 
-            updateFile(dataList);
- 
+            const tasks = elements.map(async (element) => {
+                const newsItem = await getData(element);
+                if (newsItem && !(await checkExistingUrl(newsItem.url))) {
+                    await saveToSupabase(newsItem.title, newsItem.content, newsItem.url);
+                }
+            });
+
+            await Promise.all(tasks);
             i++;
         } catch (error) {
             console.error('Error:', error.message);

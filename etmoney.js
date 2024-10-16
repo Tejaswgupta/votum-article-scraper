@@ -6,11 +6,10 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const NHM = require('node-html-markdown');
 const NodeHtmlMarkdown = NHM.NodeHtmlMarkdown;
-const { XMLParser, XMLBuilder, XMLValidator} = require("fast-xml-parser");
+const { XMLParser } = require("fast-xml-parser");
+const supabase = require('./supabaseClient'); // Import the Supabase client
 
 const parser = new XMLParser();
-
-const fileName = 'etmoney.json';
 
 const urls = new Set([]);
 
@@ -18,29 +17,20 @@ function saveUrls(urls) {
     fs.writeFileSync('urls.json', JSON.stringify(urls, null, 2), 'utf-8');
 }
 
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
+async function saveToSupabase(data) {
+    const { headline, dataString, url } = data;
 
-    let existingData = [];
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .upsert({ title: headline, content: dataString, url });
 
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error saving to Supabase:', error.message);
+    } else {
+        console.log(`Data saved to Supabase for URL: ${url}`);
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList);
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
 }
- 
+
 async function getData(url) {
     if (urls.has(url)) {
         return null;
@@ -57,7 +47,7 @@ async function getData(url) {
             if (element.tagName === 'table') {
                 return "\n" + NodeHtmlMarkdown.translate(`<table>${$(element).html()}</table>`) + "\n";
             }
-            return $(element).text()
+            return $(element).text();
         }).get();
   
         // Join paragraphs and clean up unwanted characters
@@ -67,13 +57,16 @@ async function getData(url) {
         }
         const newsItem = {
             'headline': title, 
-            'data': dataString
+            'dataString': dataString, // Use dataString to match the first code
+            'url': url // Include the URL
         };
 
         console.log(`Done: ${urls.size}`);
         urls.add(url);
         saveUrls([...urls]);
-        updateFile([newsItem]);
+        
+        await saveToSupabase(newsItem); // Save to Supabase instead of updating a file
+        
         return newsItem;
     } catch (error) {
         console.error('Error fetching data from:', url);
@@ -98,34 +91,13 @@ async function main() {
 
     const elements = sitemap['urlset']['url'].map(loc => loc['loc']);
     const tasks = elements.map(async (element) => {
-        // const data = await getData(element);
         const data = await getData(element);
         // sleep so we don't get rate-limited
         await new Promise(resolve => setTimeout(resolve, 2000));
         return data;
     });
     const dataList = await Promise.all(tasks);
-    // updateFile(dataList);
     process.exit();
-    // await (async () => {
-    //     let initialJSON = (await axios.get('https://www.etmoney.com/learn/wp-admin/admin-ajax.php?id=&post_id=1&slug=home&posts_per_page=9&offset=0&post_type=post&repeater=default&seo_start_page=1&preloaded=false&preloaded_amount=0&order=DESC&orderby=date&action=alm_get_posts&query_type=standard&canonical_url=https%3A%2F%2Fwww.etmoney.com%2Flearn&page=0')).data;
-    //     const totalPosts = initialJSON['meta']['totalposts'];
-    //     let fullJSON = (await axios.get(`https://www.etmoney.com/learn/wp-admin/admin-ajax.php?id=&post_id=1&slug=home&posts_per_page=${totalPosts}&offset=0&post_type=post&repeater=default&seo_start_page=1&preloaded=false&preloaded_amount=0&order=DESC&orderby=date&action=alm_get_posts&query_type=standard&canonical_url=https%3A%2F%2Fwww.etmoney.com%2Flearn&page=0`)).data;
-    //     fs.writeFileSync('fulljson.json', JSON.stringify(fullJSON));
-    //     // const fullJSON = JSON.parse(fs.readFileSync('fulljson.json'));
-    //     const htmlContent = fullJSON['html'];
-    //     const $ = cheerio.load(htmlContent);
-    //     const elements = $('.entry-title a').map((index, element) => $(element).attr('href')).get();
-    //     const tasks = elements.slice(0, 20).map(async (element) => {
-    //         // const data = await getData(element);
-    //         const data = await getData(element);
-    //         // sleep so we don't get rate-limited
-    //         await new Promise(resolve => setTimeout(resolve, 2000));
-    //         return data;
-    //     });
-    //     const dataList = await Promise.all(tasks);
-    //     updateFile(dataList);
-    // })();
 }
 
 main();

@@ -1,42 +1,35 @@
-// https://www.lawweb.in/ - Law Web, Web Scrapping
-
 const axios = require('axios');
-const path = require('path');
 const cheerio = require('cheerio');
-const fs = require('fs');
+const supabase = require('./supabaseClient');
 
-const fileName = 'lawweb.json';
 const urls = new Set([]);
 
-function saveUrls(urls) {
-    fs.writeFileSync('urls.json', JSON.stringify(urls, null, 2), 'utf-8');
-}
+async function checkUrlExists(url) {
+    const { data, error } = await supabase
+        .from('votum_article_scrapers')
+        .select('url')
+        .eq('url', url)
+        .single();
 
-function updateFile(dataList) { 
-    const filePath = path.join(__dirname, fileName);
-
-    let existingData = [];
-
-    try {
-        const existingDataString = fs.readFileSync(filePath, 'utf-8');
-
-        if (existingDataString.trim() !== '') {
-            existingData = JSON.parse(existingDataString);
-        }
-    } catch (error) {
-        console.log('Error reading existing data:', error);
+    if (error) {
+        console.error('Error checking URL existence:', error);
+        return false;
     }
-
-    // Filter out null values before combining data
-    const validDataList = dataList.filter(item => item !== null);
-
-    const combinedData = existingData.concat(validDataList);
-
-    fs.writeFileSync(filePath, JSON.stringify(combinedData, null, 2), 'utf-8');
+    return data !== null;
 }
- 
+
+async function saveData(title, content, url) {
+    const { error } = await supabase
+        .from('votum_article_scrapers')
+        .insert([{ title, content, url }]);
+
+    if (error) {
+        console.error('Error saving data:', error);
+    }
+}
+
 async function getData(url) {
-    if (urls.has(url)) {
+    if (urls.has(url) || await checkUrlExists(url)) {
         return null;
     }
     try {
@@ -47,54 +40,33 @@ async function getData(url) {
         const title = $('h3.entry-title').text().trim();
         const elements = $('.post-body p').map((index, element) => $(element).text()).get();
 
-        // Join paragraphs and clean up unwanted characters
-        let dataString = elements.join('\n').replace(/[\t]+/g, ' ').replace(/[\u200B-\u200D\uFEFF]+/g, ' ');
-        dataString = dataString.trim();
+        let dataString = elements.join('\n').replace(/[\t]+/g, ' ').replace(/[\u200B-\u200D\uFEFF]+/g, ' ').trim();
 
         if (dataString.startsWith("https://drive.google.com")) {
-            console.log(`${dataString.slice(0, 50)}: ${url}; OOPS< DRIVE< BAILING`)
+            console.log(`${dataString.slice(0, 50)}: ${url}; OOPS< DRIVE< BAILING`);
             return null;
         }
 
-        const newsItem = {
-            'headline': title, 
-            'data': dataString
-        };
-        console.log(`Done: ${urls.size}`);
+        await saveData(title, dataString, url);
+        console.log(`Saved: ${title} - ${url}`);
         urls.add(url);
-        saveUrls([...urls]);
-        updateFile([newsItem]);
 
-        return newsItem;
+        return { title, content: dataString };
     } catch (error) {
-        console.log('AAAA')
         console.error('Error fetching data from:', url);
-        return null; // Return null for unsuccessful requests
+        return null;
     }
 }
- 
-async function main() {
-    try {
-        const existingUrlsString = fs.readFileSync('urls.json', 'utf-8');
 
-        if (existingUrlsString.trim() !== '') {
-            existingData = JSON.parse(existingUrlsString);
-        }
-        existingData.forEach(url => {
-            urls.add(url);
-        });
-    } catch (error) {
-        console.log('Error reading existing data:', error);
-    }
+async function main() {
     let i = 1;
     const max = 4019;
-    // const max = 5;
 
     while (i <= max) {
         const baseUrl = 'https://www.lawweb.in';
         let targetUrl = `${baseUrl}/`;
 
-        if( i > 1) {
+        if (i > 1) {
             targetUrl = `${baseUrl}/search?updated-max=2023-11-14T18%3A14%3A00%2B05%3A30&max-results=50#PageNo=${i}`;
         }
         try {
@@ -105,12 +77,9 @@ async function main() {
 
             const $ = cheerio.load(htmlContent);
             const elements = $('h3.entry-title a').map((index, element) => $(element).attr('href')).get();
-            console.log(elements);
             const tasks = elements.map(element => getData(element));
-            // const dataList = await Promise.all(tasks);
 
-            // updateFile(dataList);
- 
+            await Promise.all(tasks);
             i++;
         } catch (error) {
             console.error('Error:', error);
